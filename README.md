@@ -412,3 +412,47 @@ function:
 AI 可以快速提供可行的程式範例與排錯方向，但建議不一定能直接套用於本機。例如 Podman 與 LM Studio 的網路連線問題，必須透過實際 IP、Port 與執行結果來確認，而不是只依靠 AI 的假設。
 
 另一個重要觀念是：LLM 可以描述 MATLAB/Simulink 的功能，卻不等於系統已經執行模擬。因此 README 清楚區分本階段的檔案查詢能力與尚未完成的 MATLAB Runner。未來將進一步理解 Agent 程式細節、改進測試、擴充工具，並使實驗執行可追溯與可重現。
+
+## 13. 測試執行證據（Testing Evidence）
+
+以下測試均在 Podman 容器環境中執行，使用本機 LM Studio 提供 LLM 推論服務。
+
+### T01：正常查詢 Simulink 模型
+
+**測試目的：** 驗證 Agent 能透過 Tool Calling 執行工具並取得模型清單。
+
+**測試結果：PASS**
+
+Agent 成功呼叫 `list_simulink_models`，取得 `AEBTestBench.slx`，並根據 Observation 產生最終回答。
+
+![T01 - Success Query Models](evidence/T01_success_query_models.png)
+
+### T02：模型資料夾不存在
+
+**測試目的：** 驗證工具發生錯誤時，Agent 能正確回報錯誤原因。
+
+**測試結果：PASS**
+
+未掛載 `models` 資料夾時，工具回傳 `status: error`，Agent 正確說明資料夾不存在。
+
+![T02 - Missing Models Folder](evidence/T02_failure_missing_models_folder.png)
+
+### T03：查詢不存在的模型
+
+**測試目的：** 驗證 Agent 能根據真實模型清單判斷指定模型是否存在。
+
+**測試結果：PASS**
+
+使用者查詢 `ABC_Test_Model.slx`，Agent 根據工具回傳的模型清單，正確判斷該模型不存在。
+
+![T03 - Missing Model](evidence/T03_missing_model.png)
+
+### T04：LLM API 連線失敗
+
+**測試目的：** 驗證 Agent 能捕捉 LLM API 連線異常並提供錯誤回覆。
+
+**測試結果：PASS**
+
+將 API 位址設定為 `http://127.0.0.1:9/v1`，觸發 `APIConnectionError`。Agent 成功處理例外並告知任務未完成，沒有未處理的 Python Traceback。
+
+![T04 - LLM Connection Failure](evidence/T04_failure_llm_connection.png)

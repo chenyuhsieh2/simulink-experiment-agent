@@ -531,6 +531,76 @@ function:
 
 之後使用 LangGraph 串接「LLM 決策 → Python Tool 執行 → Observation → LLM 回答」，並在本機成功測試。此過程有助於區分：**LLM 提出工具呼叫請求；真正執行檔案查詢的是 Python 程式。**
 
+### 案例四：從單一 Tool 擴充為雙工具 Agent
+
+**問題與開發需求：**
+
+最初 Agent 只有 `list_simulink_models()`，可以列出所有 `.slx` 模型，但無法直接針對指定模型進行存在性查詢。為提升 Tool Calling 的功能完整性，進一步規劃第二個工具 `check_simulink_model(model_name)`。
+
+**與 AI 的協作過程：**
+
+1. 向 ChatGPT 說明現有 `agent.py`、`tools.py` 的架構及希望新增的功能。
+2. 討論兩個工具的職責分工、Tool Schema、參數格式與回傳資料結構。
+3. 依照建議修改 Python Tool 與 LangGraph Tool Node，使 LLM 能根據自然語言需求選擇適當工具。
+4. 在 Podman 容器中執行測試，將實際 Tool Call、Observation 與 Final Answer 回報給 AI，確認結果是否符合預期。
+
+**實際成果：**
+
+- `list_simulink_models()`：列出目前可用的 `.slx` 模型。
+- `check_simulink_model(model_name)`：查詢指定模型是否存在。
+- T05、T06 證明 Agent 在測試情境中能正確選擇新工具，並區分模型存在及不存在的結果。
+
+**學習重點：**
+
+理解 Tool Calling 不只是建立 Python 函式，還必須定義工具介面、讓 LLM 正確選擇工具，並將真實執行結果回傳給 LLM。
+
+### 案例五：AI 協助程式除錯與安全性驗證
+
+**開發過程遇到的問題：**
+
+擴充雙工具 Agent 時，曾發生程式修改後無法正常執行的問題，包括 Python 程式結構、縮排，以及原有 `OpenAI` 匯入遺漏等情況。
+
+**與 AI 的協作過程：**
+
+1. 將 PowerShell 或 Podman 終端機的實際錯誤訊息提供給 ChatGPT。
+2. 根據錯誤內容檢查 Python 匯入、函式定義、Tool Schema 與 Tool Node。
+3. 在本機修改程式後，使用 `python -m py_compile` 驗證語法，並重新建置 Podman Image。
+4. 對新增工具進行非法路徑測試，確認 `../test.slx` 不會被當成合法模型名稱。
+
+**實際成果：**
+
+- 雙工具 Agent 可正常執行。
+- T07 驗證 Python Tool 能拒絕指定的非法模型路徑。
+- T08 驗證 Agent 在一次不支援模擬的測試中，沒有虛構 Yaw Rate 數值。
+
+**學習重點：**
+
+AI 可以協助分析錯誤原因，但 AI 提供的程式碼或修正建議仍可能不完整，因此必須依靠本機實際編譯、執行及測試結果確認，而不能只依照 AI 的文字判斷成功。
+
+### 案例六：Podman 回歸測試、版本管理與文件一致性
+
+**問題與開發需求：**
+
+完成雙工具 Agent 後，需要確認依賴版本、Podman Image、GitHub 原始碼與 README 記錄保持一致，讓助教能夠重現已完成的功能。
+
+**與 AI 的協作過程：**
+
+1. 透過 AI 建議的指令查詢容器內 LangGraph 與 OpenAI SDK 的實際版本。
+2. 將主要套件版本固定為 `langgraph==1.2.24` 與 `openai==3.57.0`。
+3. 重新建置 `a2-final` Podman Image，實際執行模型存在性查詢，確認 Agent 能正常選擇工具並回傳正確結果。
+4. 與 AI 逐步核對 Git 修改檔案、測試截圖、Commit 和 GitHub Push 結果。
+5. 檢查 README 中的功能描述與測試總表，將原本的單工具、T01～T04 敘述更新為雙工具與 T01～T08。
+
+**實際成果：**
+
+- 主要 Python 依賴版本已固定，但尚未完整鎖定所有間接依賴。
+- 最終 Podman Image 已通過指定模型存在性查詢的基本回歸測試。
+- GitHub `master` 已包含雙工具 Agent、測試證據及更新後的 README。
+
+**學習重點：**
+
+軟體開發不只需要功能正確，還必須考慮環境重現、版本控制、測試證據與文件一致性。AI 可以協助規劃檢查流程，但完成與否仍以本機工具輸出及實際執行證據為準。
+
 ### 12.3 測試與驗證方法
 
 本階段共完成 T01～T08 八項測試，依據實際 Python Tool 執行結果及 Agent Trace，驗證 Agent 的工具調用能力、工具選擇、錯誤處理與功能限制。

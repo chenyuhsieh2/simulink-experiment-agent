@@ -70,7 +70,13 @@ list_simulink_models          check_simulink_model
 | Podman / WSL2 | 容器化建置與執行 Agent |
 | MATLAB/Simulink `.slx` | Model Inspector 的實際查詢對象；尚未用於模擬執行 |
 
-`requirements.txt` 目前包含 `langgraph` 與 `openai`；套件由 `Containerfile` 在建置時安裝。現階段尚未固定套件版本，後續可補強版本鎖定以提高可重現性。
+
+`requirements.txt` 已固定兩個主要套件版本：
+
+- `langgraph==1.2.24`
+- `openai==3.57.0`
+
+上述版本已於 Podman 容器中確認，並通過重新建置及基本 Agent 回歸測試。目前尚未完整鎖定所有間接依賴。
 
 ## 4. 已實作功能與 Tool 定義
 
@@ -143,7 +149,7 @@ list_simulink_models          check_simulink_model
 
 1. 接收使用者自然語言輸入。
 2. 使用 LM Studio API 呼叫 Gemma 4 E4B。
-3. 由 LLM 判斷是否發出 `list_simulink_models` Tool Call。
+3. 由 LLM 根據使用者需求，判斷是否呼叫 `list_simulink_models`（列出模型）或 `check_simulink_model`（檢查指定模型是否存在）。
 4. 由 Python 程式實際執行工具並回傳 Observation。
 5. 再次呼叫 LLM，根據 Observation 產生最終回答。
 
@@ -295,6 +301,10 @@ podman run --rm -it -e LM_STUDIO_BASE_URL=http://172.21.208.1:1234/v1 -v "${PWD}
 | T02 | 未掛載 `models/` | Tool 回傳目錄不存在，Agent 說明錯誤 | Pass |
 | T03 | 查詢不存在的 `ABC_Test_Model.slx` | 根據工具清單回答不存在，不虛構模型 | Pass |
 | T04 | LM Studio API 連線失敗 | 捕捉 API 錯誤，清楚回報任務未完成 | Pass |
+| T05 | 使用 `check_simulink_model` 查詢現有 `AEBTestBench.slx` | Agent 正確選擇新工具，回傳 `exists: True` 並回答模型存在 | Pass |
+| T06 | 使用 `check_simulink_model` 查詢不存在的 `ABC_Test_Model.slx` | Agent 正確選擇新工具，回傳 `exists: False` 並回答模型不存在 | Pass |
+| T07 | 使用 `../test.slx` 測試非法模型路徑（Tool 層級測試） | 工具拒絕不合法路徑並回傳錯誤；此測試未經 LLM Agent | Pass |
+| T08 | 要求切換 Scenario 06、執行 MATLAB/Simulink 模擬並查詢 Yaw Rate 最大值 | Agent 確認模型存在，但明確說明尚不支援模擬及結果分析，沒有虛構數值 | Pass |
 
 上述 Pass 為本次開發環境已觀察到的結果，並非宣稱所有電腦或模型輸出皆固定一致。
 
@@ -442,7 +452,7 @@ Agent 能根據自然語言需求選擇工具，並依據真實 Tool Observation
 5. **尚未提供網頁介面：** 目前透過命令列輸入自然語言需求。
 6. **依賴本機 LLM API：** LM Studio 必須保持 Running，且 Windows／WSL 網路位址可能變動。
 7. **LLM 行為仍有不確定性：** T08 已驗證一次不支援模擬需求的正確回覆，但不能保證所有輸入皆不會產生錯誤或虛構資訊。
-8. **可重現性待加強：** Python 套件尚未鎖定精確版本，測試以手動執行及截圖證據為主，尚未建立完整自動化測試。
+8. **可重現性待加強：** 已固定 LangGraph 與 OpenAI SDK 版本，但尚未鎖定所有間接套件版本。測試仍以人工執行及截圖紀錄為主，尚未建立完整自動化測試。
 
 ### 9.2 Podman 與部署邊界
 

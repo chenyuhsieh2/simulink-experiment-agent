@@ -23,22 +23,31 @@
 LangGraph Agent（Podman 容器）
          |
          v
-Gemma 4 E4B（Windows / LM Studio API）
+LLM Decision（Gemma 4 E4B / LM Studio）
          |
          v
-判斷是否需要 Tool Calling
+    Tool Selection
          |
-         v
-Model Inspector（容器內 Python Tool）
-         |
-         v
-Observation（真實檔案查詢結果）
-         |
-         v
-Gemma 4 E4B 根據結果形成回答
-         |
-         v
-Final Answer
+         +------------------------------+
+         |                              |
+         v                              v
+list_simulink_models          check_simulink_model
+列出所有 .slx 模型            檢查指定 .slx 模型
+         |                              |
+         +------------------------------+
+                        |
+                        v
+          Python Tool Execution
+              （Podman 容器）
+                        |
+                        v
+          Observation（實際結果）
+                        |
+                        v
+             LLM 再次決策
+                        |
+                        v
+                 Final Answer
 ```
 
 **部署邊界：**
@@ -92,6 +101,41 @@ Final Answer
 ```
 
 **限制：** 此工具僅列出資料夾第一層的 `.slx` 檔名，不會解析模型內容、檢查相依檔案、切換 Scenario 或執行 MATLAB。
+
+#### 4.1.1 指定模型存在性檢查（check_simulink_model）
+
+為提升 Agent 對不同自然語言需求的處理能力，本次擴充第二個 Python Tool `check_simulink_model`，使 LLM 能依使用者需求，自主選擇列出全部模型或檢查指定模型。
+
+**Tool 定義**
+
+| 項目 | 說明 |
+|---|---|
+| Tool Name | `check_simulink_model` |
+| Purpose | 檢查指定的 Simulink `.slx` 模型檔案是否存在 |
+| Input | `model_name: str`，例如 `AEBTestBench.slx` |
+| Output | `status`、`model`、`exists`、`message` |
+| Execution | Podman 容器內執行 Python Tool |
+| Data Source | 唯讀掛載的 `/app/models` 資料夾 |
+
+**執行流程**
+
+1. 使用者輸入指定模型查詢需求。
+2. Gemma 4 E4B 根據 Tool Schema 選擇 `check_simulink_model`。
+3. LangGraph Tool Node 驗證工具名稱與參數格式。
+4. Python Tool 檢查指定 `.slx` 檔案是否存在。
+5. Tool Observation 回傳 LLM，由 Agent 產生最終回答。
+
+**Error Handling**
+
+- 模型資料夾不存在：回傳 `status: error`。
+- 模型名稱格式不合法：回傳 `status: error`。
+- 指定模型不存在：回傳 `status: success`、`exists: false`，表示查詢正常完成，但沒有找到檔案。
+- 符號連結模型：拒絕查詢並回傳錯誤，避免直接跟隨符號連結。
+- Tool 名稱或參數不符合 Schema：由 Agent Tool Node 回傳錯誤訊息。
+
+**限制**
+
+本工具僅檢查模型檔案是否存在，不會解析 `.slx` 內容、驗證 MATLAB/Simulink 相容性、切換 Scenario 或執行模擬。模型存在不代表能成功載入或執行。
 
 ### 4.2 LangGraph Agent
 
@@ -326,25 +370,110 @@ LM Studio API 呼叫失敗（APIConnectionError）。請確認 Server 是否啟�
 
 > 建議繳交時保留 T01～T04 的終端機截圖作為測試證據。本文僅記錄本次已觀察到的輸出；截圖檔案需另外提供，不能以文字紀錄代替實際圖片。
 
+### T05：指定模型存在性查詢
+
+**測試目的：** 驗證 LLM 能根據自然語言需求，自主選擇 `check_simulink_model`，並正確判斷指定模型是否存在。
+
+- **測試輸入：** 請幫我檢查 AEBTestBench.slx 模型是否存在？
+- **預期工具：** `check_simulink_model`
+- **預期結果：** `status: success`、`exists: True`
+- **實際結果：** Agent 成功呼叫指定工具，確認模型存在並產生正確回答。
+- **測試環境：** Podman + LangGraph + LM Studio（Gemma 4 E4B）
+- **測試判定：** PASS
+- **測試證據：** `evidence/T05_check_existing_model.png`
+
+### T06：指定模型不存在查詢
+
+**測試目的：** 驗證 Agent 能區分工具執行成功與模型不存在，不會虛構模型存在。
+
+- **測試輸入：** 請幫我確認 ABC_Test_Model.slx 模型是否存在？
+- **預期工具：** `check_simulink_model`
+- **預期結果：** `status: success`、`exists: False`
+- **實際結果：** Agent 正確判斷模型不存在，並依 Tool Observation 產生回答。
+- **測試環境：** Podman + LangGraph + LM Studio（Gemma 4 E4B）
+- **測試判定：** PASS
+- **測試證據：** `evidence/T06_check_missing_model.png`
+
+### T07：非法模型路徑驗證（Tool-Level Test）
+
+**測試目的：** 驗證 Python Tool 能拒絕不合法的模型檔名，避免使用路徑跳脫方式查詢其他資料夾。
+
+- **測試輸入：** `../test.slx`
+- **測試工具：** `check_simulink_model`
+- **預期結果：** `status: error`，回傳無效模型名稱訊息。
+- **實際結果：** Podman 容器內的 Python Tool 拒絕非法路徑，沒有出現未處理的 Python 例外。
+- **測試環境：** Podman 容器內直接執行 Python Tool
+- **測試判定：** PASS
+- **測試證據：** `evidence/T07_invalid_model_path.png`
+
+**測試範圍說明：** 本案例為 Tool-Level Test，未透過 LLM 進行工具選擇，且僅驗證本次使用的非法路徑輸入。
+
+### T08：不支援的 MATLAB/Simulink 模擬需求
+
+**測試目的：** 驗證使用者要求尚未實作的模擬功能時，Agent 能說明自身能力限制，不會虛構模擬結果。
+
+- **測試輸入：** 請將 AEBTestBench.slx 模型切換到 Scenario 06，執行 MATLAB/Simulink 模擬，並告訴我 Yaw Rate 的最大值是多少？
+- **實際工具：** `check_simulink_model`
+- **預期結果：** 可查詢模型檔案，但必須明確說明尚未支援 Scenario 切換及模擬執行。
+- **實際結果：** Agent 確認模型存在，並明確說明無法執行模擬或提供真實 Yaw Rate 數值。
+- **測試環境：** Podman + LangGraph + LM Studio（Gemma 4 E4B）
+- **測試判定：** PASS
+- **測試證據：** `evidence/T08_unsupported_simulation.png`
+
+**限制說明：** T08 僅驗證此次測試輸入下的正確行為，不代表系統對所有模擬相關問題都能保證不產生錯誤或虛構資訊。
+
 ## 9. 目前限制與已知問題
 
-1. **未整合 MATLAB Runner：** 尚無法真正開啟或執行 Simulink 模型。
-2. **未解析 `.slx` 內部：** Model Inspector 只掃描檔名，不確認模型內容與相依性。
-3. **未支援 Scenario 切換或參數驗證：** 使用者提出這類要求時，不應宣稱已完成操作。
-4. **未擷取模擬訊號：** 尚無 Yaw Rate、Steering Angle、Vehicle Velocity 的真實模擬數據或圖表比較。
-5. **依賴本機 API：** LM Studio 必須保持 Running；WSL/Windows IP 可能更動。
-6. **LLM 仍有不確定性：** 工具選擇與最終用語可能隨模型設定變化，需要持續測試。
-7. **可重現性待加強：** Python 套件目前尚未固定精確版本；未來應補上版本鎖定、更多自動化測試及執行證據。
+本次指定作業 2 已完成最小可執行 AI Agent 雛形，包含 LangGraph、Gemma 4 E4B、兩個 Python Tools 與 Podman 容器化部署。
+
+目前已實作的工具如下：
+
+- `list_simulink_models`：列出模型資料夾內第一層的 `.slx` 檔案。
+- `check_simulink_model(model_name)`：檢查指定模型檔案是否存在，並處理非法檔名及模型目錄不存在等情況。
+
+Agent 能根據自然語言需求選擇工具，並依據真實 Tool Observation 產生回答。T05～T08 已提供新增功能及限制情境的實際測試證據。
+
+### 9.1 目前功能限制
+
+1. **未整合 MATLAB Runner：** 尚無法真正載入或執行 Simulink 模型。
+2. **未解析 `.slx` 內部：** 目前僅列出模型檔名及檢查檔案存在性，不確認模型內容、版本、相依性或可執行性。
+3. **未支援 Scenario 切換或參數驗證：** 使用者提出此類需求時，Agent 應說明功能尚未實作。
+4. **未擷取模擬訊號：** 尚無 Yaw Rate、Steering Angle、Vehicle Velocity 的真實模擬數據或波形比較。
+5. **尚未提供網頁介面：** 目前透過命令列輸入自然語言需求。
+6. **依賴本機 LLM API：** LM Studio 必須保持 Running，且 Windows／WSL 網路位址可能變動。
+7. **LLM 行為仍有不確定性：** T08 已驗證一次不支援模擬需求的正確回覆，但不能保證所有輸入皆不會產生錯誤或虛構資訊。
+8. **可重現性待加強：** Python 套件尚未鎖定精確版本，測試以手動執行及截圖證據為主，尚未建立完整自動化測試。
+
+### 9.2 Podman 與部署邊界
+
+依課程規定，除 LLM Server 外，開發專案須使用 Podman 容器技術。
+
+本階段的部署方式如下：
+
+- **Podman 容器內：** LangGraph Agent、Python Tools、Python 執行環境及相關套件。
+- **Windows 主機：** LM Studio 提供 Gemma 4 E4B 本機 LLM 推論服務，透過 HTTP API 與 Podman Agent 通訊。
+- **模型檔案：** Windows 主機上的 `models/` 透過唯讀 Volume Mount 提供容器存取；模型查詢邏輯在容器內執行。
+- **MATLAB Runner：** 目前尚未實作，因此本階段沒有在容器外執行自行開發的 MATLAB 工具服務。
+
+本階段已實作的 Agent 與 Python Tool 均於 Podman 容器中運作。未來若將 MATLAB Runner 部署於 Windows 主機，仍須向授課教師確認是否符合 Podman 規範。
 
 ## 10. 後續開發規劃
 
-本專案沿用同一主題持續擴充，而非另做新專案：
+### 10.1 與指定作業 1 規劃之差異
 
-- **指定作業 3：** 擴充 Scenario 查詢、參數驗證及 Agent 的錯誤處理與評估；以測試案例比較改進前後表現。
-- **期末專案：** 規劃整合受控的 MATLAB Runner，在具有授權與相依檔案的主機上執行真正 Simulink 模擬。
-- **後續分析能力：** 擷取並比較 Yaw Rate、Steering Angle 與 Vehicle Velocity，產生實驗紀錄與報告。
+指定作業 1 原先規劃於作業 2 階段建立基本 Agent、模型資訊查詢與至少一個可執行的 MATLAB Tool，逐步支援模型參數查詢、Scenario 設定或模擬執行。
 
-上述均為後續規劃，**不是指定作業 2 已完成的功能**。
+本次實際完成的是以 Python 檔案系統工具為基礎的 Model Inspector，包含模型清單查詢與指定模型存在性檢查，尚未完成真正的 MATLAB/Simulink 操作。
+
+此差異屬於階段性實作範圍調整，並非上述 MATLAB 功能已完成。現階段優先驗證 LLM Tool Selection、實際 Tool Execution、Observation Feedback、Error Handling 及 Podman 部署，再於後續作業逐步整合 MATLAB/Simulink 功能。
+
+### 10.2 後續開發階段
+
+- **指定作業 3：** 優先擴充 Scenario 查詢、參數驗證、Agent 錯誤處理或狀態管理，並建立至少 10 個測試案例，針對選定的技術改進進行 Before／After 評估。
+- **期末專案：** 規劃整合受控 MATLAB Runner，確認部署合規性、MATLAB 授權及模型相依檔案後，實作真正的 Simulink 模擬。
+- **後續分析能力：** 擷取 Yaw Rate、Steering Angle、Vehicle Velocity，進行數值及波形比較，產生可追溯的實驗紀錄與報告。
+
+上述內容均為後續規劃，**不屬於指定作業 2 已完成的功能**。
 
 ## 11. 安全與使用注意事項
 
@@ -394,9 +523,20 @@ function:
 
 ### 12.3 測試與驗證方法
 
-本階段依據真實 Tool 輸出，分別測試正常模型查詢、缺少模型資料夾、指定模型不存在、LLM API 無法連線四種情境。測試輸入、觀察結果及重現指令列於第 8 節。
+本階段共完成 T01～T08 八項測試，依據實際 Python Tool 執行結果及 Agent Trace，驗證 Agent 的工具調用能力、工具選擇、錯誤處理與功能限制。
 
-這些測試用於確認 Agent 不僅能生成合理文字，也能實際調用工具，並在可預期的異常下提供明確結果。尚未涵蓋所有可能錯誤，後續仍需擴充自動化測試。
+測試分為以下類型：
+
+- **基本 Agent 測試（T01～T04）：** 驗證正常模型查詢、模型資料夾不存在、指定模型不存在，以及 LLM API 無法連線等情境。
+- **雙工具選擇測試（T05～T06）：** 驗證 LLM 能根據自然語言需求選擇 `check_simulink_model`，並正確判斷指定模型存在或不存在。
+- **Tool-Level 安全性測試（T07）：** 在 Podman 容器內直接測試 Python Tool 對非法模型路徑的處理，不涉及 LLM Tool Selection。
+- **功能限制測試（T08）：** 驗證 Agent 面對尚未支援的 Scenario 切換與 MATLAB 模擬需求時，能說明功能限制，不虛構模擬數據。
+
+其中 T02 與 T04 為主要 Failure Cases，分別驗證模型目錄缺失與 LLM API 連線失敗的處理。
+
+所有測試均提供實際執行截圖，測試紀錄與重現方式列於第 8 節，對應截圖列於第 13 節。
+
+目前八項測試均符合各自的預期結果，但主要採人工測試與截圖紀錄，尚未建立完整自動化測試框架，也未完成 MATLAB/Simulink 模擬驗證。
 
 ### 12.4 本階段學習重點
 
@@ -415,7 +555,7 @@ AI 可以快速提供可行的程式範例與排錯方向，但建議不一定�
 
 ## 13. 測試執行證據（Testing Evidence）
 
-以下測試均在 Podman 容器環境中執行，使用本機 LM Studio 提供 LLM 推論服務。
+本章整理指定作業 2 的實際執行證據。Agent 整合測試使用 Podman 容器執行 LangGraph Agent 與 Python Tool，並由 Windows 主機上的 LM Studio 提供 LLM 推論服務。其中 T07 為 Podman 容器內的獨立 Python Tool 測試，不涉及 LLM 推論。所有測試結果均以實際執行截圖為依據。
 
 ### T01：正常查詢 Simulink 模型
 
@@ -456,3 +596,51 @@ Agent 成功呼叫 `list_simulink_models`，取得 `AEBTestBench.slx`，並根�
 將 API 位址設定為 `http://127.0.0.1:9/v1`，觸發 `APIConnectionError`。Agent 成功處理例外並告知任務未完成，沒有未處理的 Python Traceback。
 
 ![T04 - LLM Connection Failure](evidence/T04_failure_llm_connection.png)
+
+
+
+### T05：指定模型存在性查詢
+
+**測試目的：** 驗證 LLM 能自主選擇 `check_simulink_model`，並確認指定模型是否存在。
+
+**測試結果：PASS**
+
+Agent 正確呼叫 `check_simulink_model`，取得 `AEBTestBench.slx` 的 `exists: True`，並根據 Tool Observation 回答模型存在。
+
+![T05 - Check Existing Model](evidence/T05_check_existing_model.png)
+
+### T06：指定模型不存在查詢
+
+**測試目的：** 驗證 Agent 能根據指定模型的實際查詢結果，正確判斷模型不存在。
+
+**測試結果：PASS**
+
+Agent 呼叫 `check_simulink_model`，取得 `ABC_Test_Model.slx` 的 `exists: False`，並正確回答模型不存在。
+
+![T06 - Check Missing Model](evidence/T06_check_missing_model.png)
+
+### T07：非法模型路徑驗證（Tool-Level Test）
+
+**測試目的：** 驗證 Python Tool 能拒絕非法檔案路徑。
+
+**測試結果：PASS**
+
+在 Podman 容器內直接呼叫 `check_simulink_model('../test.slx')`，工具回傳 `status: error` 及無效模型名稱訊息，未出現未處理的 Python 例外。
+
+本案例為 Tool-Level Test，不涉及 LLM Tool Selection，僅驗證指定的非法路徑案例。
+
+![T07 - Invalid Model Path](evidence/T07_invalid_model_path.png)
+
+### T08：不支援 MATLAB/Simulink 模擬需求
+
+**測試目的：** 驗證 Agent 遇到尚未實作的模擬需求時，不會虛構模擬結果。
+
+**測試結果：PASS**
+
+使用者要求將 `AEBTestBench.slx` 切換至 Scenario 06、執行模擬並提供 Yaw Rate 最大值。
+
+Agent 先呼叫 `check_simulink_model` 確認模型檔案存在，接著明確說明目前尚未支援 Scenario 切換與 MATLAB/Simulink 模擬，未提供虛構的 Yaw Rate 數值。
+
+此結果僅證明本次測試輸入下的行為符合預期，不代表所有模擬相關要求皆能正確處理。
+
+![T08 - Unsupported Simulation](evidence/T08_unsupported_simulation.png)

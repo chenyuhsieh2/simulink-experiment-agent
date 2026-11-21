@@ -4,8 +4,8 @@ import os
 from typing import TypedDict
 
 from openai import OpenAI
+from tools import list_simulink_models, check_simulink_model
 from langgraph.graph import StateGraph, START, END
-from tools import list_simulink_models
 
 
 client = OpenAI(
@@ -31,6 +31,26 @@ TOOLS = [{
         }
     }
 }]
+
+
+TOOLS.append({
+    "type": "function",
+    "function": {
+        "name": "check_simulink_model",
+        "description": "檢查指定的 Simulink .slx 模型檔案是否存在",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "model_name": {
+                    "type": "string",
+                    "description": "要查詢的模型檔名，例如 AEBTestBench.slx"
+                }
+            },
+            "required": ["model_name"],
+            "additionalProperties": False
+        }
+    }
+})
 
 
 class AgentState(TypedDict):
@@ -130,14 +150,23 @@ def tool_node(state: AgentState):
             arguments = json.loads(
                 call["function"]["arguments"]
             )
-
             if name == "list_simulink_models" and arguments == {}:
                 result = list_simulink_models()
+
+            elif (
+                name == "check_simulink_model"
+                and isinstance(arguments, dict)
+                and set(arguments) == {"model_name"}
+                and isinstance(arguments["model_name"], str)
+            ):
+                result = check_simulink_model(arguments["model_name"])
+
             else:
                 result = {
                     "status": "error",
                     "message": "未知工具或無效參數"
                 }
+
 
         except Exception as exc:
             result = {
